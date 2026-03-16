@@ -3285,13 +3285,18 @@ void AnimationTrackEdit::gui_input(const Ref<InputEvent> &p_event) {
 	if (mb.is_valid() && moving_selection_attempt) {
 		if (!mb->is_pressed() && mb->get_button_index() == MouseButton::LEFT) {
 			moving_selection_attempt = false;
-			if (moving_selection && moving_selection_effective) {
-				if (std::abs(editor->get_moving_selection_offset()) > CMP_EPSILON) {
-					emit_signal(SNAME("move_selection_commit"));
+			bool need_commit = moving_selection && moving_selection_effective && std::abs(editor->get_moving_selection_offset()) > CMP_EPSILON;
+			if (need_commit) {
+				emit_signal(SNAME("move_selection_commit"));
+			} else {
+				if (moving_selection) {
+					emit_signal(SNAME("move_selection_cancel"));
 				}
-			} else if (select_single_attempt != -1) {
-				emit_signal(SNAME("select_key"), select_single_attempt, true);
+				if (!moving_selection_effective && select_single_attempt != -1) {
+					emit_signal(SNAME("select_key"), select_single_attempt, true);
+				}
 			}
+
 			moving_selection = false;
 			select_single_attempt = -1;
 		}
@@ -4287,6 +4292,10 @@ void AnimationTrackEditor::_name_limit_changed() {
 
 void AnimationTrackEditor::_timeline_changed(float p_new_pos, bool p_timeline_only) {
 	emit_signal(SNAME("timeline_changed"), p_new_pos, p_timeline_only, false);
+}
+
+void AnimationTrackEditor::_zoom_changed() {
+	move_selection_time_draw->queue_redraw();
 }
 
 void AnimationTrackEditor::_track_remove_request(int p_track) {
@@ -5989,6 +5998,8 @@ void AnimationTrackEditor::_new_track_property_selected(const String &p_name) {
 void AnimationTrackEditor::_timeline_value_changed(double) {
 	timeline->update_play_position();
 
+	move_selection_time_draw->queue_redraw();
+
 	_redraw_tracks();
 	for (int i = 0; i < track_edits.size(); i++) {
 		track_edits[i]->update_play_position();
@@ -6214,11 +6225,13 @@ void AnimationTrackEditor::_key_deselected(int p_key, int p_track) {
 
 void AnimationTrackEditor::_move_selection_begin() {
 	moving_selection = true;
+	move_selection_time_draw->queue_redraw();
 	moving_selection_offset = 0;
 }
 
 void AnimationTrackEditor::_move_selection(float p_offset) {
 	moving_selection_offset = p_offset;
+	move_selection_time_draw->queue_redraw();
 	_redraw_tracks();
 }
 
@@ -6426,6 +6439,7 @@ void AnimationTrackEditor::_move_selection_commit() {
 	}
 
 	moving_selection = false;
+	move_selection_time_draw->queue_redraw();
 	undo_redo->add_do_method(this, "_redraw_tracks");
 	undo_redo->add_undo_method(this, "_redraw_tracks");
 
@@ -6441,6 +6455,7 @@ void AnimationTrackEditor::_move_selection_commit() {
 
 void AnimationTrackEditor::_move_selection_cancel() {
 	moving_selection = false;
+	move_selection_time_draw->queue_redraw();
 	_redraw_tracks();
 }
 
@@ -6450,6 +6465,41 @@ bool AnimationTrackEditor::is_moving_selection() const {
 
 float AnimationTrackEditor::get_moving_selection_offset() const {
 	return moving_selection_offset;
+}
+
+void AnimationTrackEditor::_move_selection_time_draw() {
+	if (!moving_selection) {
+		return;
+	}
+	Ref<Font> font = get_theme_font(SceneStringName(font), SNAME("Label"));
+	int font_size = get_theme_font_size(SceneStringName(font_size), SNAME("Label"));
+	Color font_color = get_theme_color(SceneStringName(font_color), SNAME("Label"));
+	for (const KeyValue<SelectedKey, KeyInfo> &E : selection) {
+		float key_time = animation->track_get_key_time(E.key.track, E.key.key) + moving_selection_offset;
+		String text;
+		if (timeline->is_using_fps()) {
+			real_t fps = animation->get_step();
+			if (fps > 0) {
+				fps = 1.0 / fps;
+			}
+			text = TranslationServer::get_singleton()->format_number(String::num(key_time * fps, Math::range_step_decimals(FPS_DECIMAL)), _get_locale());
+		} else {
+			text = TranslationServer::get_singleton()->format_number(String::num(key_time, Math::range_step_decimals(SECOND_DECIMAL)), _get_locale());
+		}
+		Vector2 text_size = font->get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size);
+
+		float time_offset = key_time - timeline->get_value();
+		float screen_pos_x = time_offset * timeline->get_zoom_scale() + timeline->get_name_limit() - text_size.x / 2.0;
+		float screen_pos_y = track_edits[E.key.track]->get_global_position().y - move_selection_time_draw->get_global_position().y;
+		float min_x = timeline->get_name_limit();
+		float max_x = MAX(min_x, box_selection_container->get_size().x - timeline->get_buttons_width() - text_size.x);
+		float min_y = font->get_ascent(font_size);
+		float max_y = MAX(min_y, box_selection_container->get_size().y - font->get_descent(font_size));
+		screen_pos_x = CLAMP(screen_pos_x, min_x, max_x);
+		screen_pos_y = CLAMP(screen_pos_y, min_y, max_y);
+
+		move_selection_time_draw->draw_string(font, Point2(screen_pos_x, screen_pos_y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, font_color);
+	}
 }
 
 void AnimationTrackEditor::_box_selection_draw() {
@@ -6569,6 +6619,7 @@ void AnimationTrackEditor::_scroll_changed(const Vector2 &p_val) {
 		box_select_rect = rect;
 	}
 
+	move_selection_time_draw->queue_redraw();
 	prev_scroll_position = p_val;
 }
 
@@ -8179,6 +8230,7 @@ AnimationTrackEditor::AnimationTrackEditor() {
 	timeline->connect(SceneStringName(value_changed), callable_mp(this, &AnimationTrackEditor::_timeline_value_changed));
 	timeline->connect("length_changed", callable_mp(this, &AnimationTrackEditor::_update_length));
 	timeline->connect("filter_changed", callable_mp(this, &AnimationTrackEditor::_update_tracks));
+	timeline->connect("zoom_changed", callable_mp(this, &AnimationTrackEditor::_zoom_changed));
 
 	panner.instantiate();
 	panner->set_scroll_zoom_factor(AnimationTimelineEdit::SCROLL_ZOOM_FACTOR_IN);
@@ -8223,6 +8275,11 @@ AnimationTrackEditor::AnimationTrackEditor() {
 	scroll->get_v_scroll_bar()->connect(SceneStringName(visibility_changed), callable_mp(this, &AnimationTrackEditor::_update_timeline_margins));
 	scroll->get_v_scroll_bar()->connect(SceneStringName(value_changed), callable_mp(this, &AnimationTrackEditor::_v_scroll_changed));
 	scroll->get_h_scroll_bar()->connect(SceneStringName(value_changed), callable_mp(this, &AnimationTrackEditor::_h_scroll_changed));
+
+	move_selection_time_draw = memnew(Control);
+	box_selection_container->add_child(move_selection_time_draw);
+	move_selection_time_draw->set_mouse_filter(MOUSE_FILTER_IGNORE);
+	move_selection_time_draw->connect(SceneStringName(draw), callable_mp(this, &AnimationTrackEditor::_move_selection_time_draw));
 
 	timeline_vbox->set_custom_minimum_size(Size2(0, 150) * EDSCALE);
 

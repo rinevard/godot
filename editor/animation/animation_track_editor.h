@@ -672,6 +672,7 @@ class AnimationTrackEditor : public VBoxContainer {
 
 	void _name_limit_changed();
 	void _timeline_changed(float p_new_pos, bool p_timeline_only);
+	void _zoom_changed();
 	void _track_remove_request(int p_track);
 	void _animation_track_remove_request(int p_track, Ref<Animation> p_from_animation);
 	void _track_grab_focus(int p_track);
@@ -779,6 +780,9 @@ class AnimationTrackEditor : public VBoxContainer {
 	AnimationMultiTrackKeyEdit *multi_key_edit = nullptr;
 	void _update_key_edit();
 	void _clear_key_edit();
+
+	Control *move_selection_time_draw = nullptr;
+	void _move_selection_time_draw();
 
 	Control *box_selection_container = nullptr;
 
